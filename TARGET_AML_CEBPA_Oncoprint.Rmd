@@ -1,0 +1,209 @@
+---
+title: "CEBPA Oncoprint"
+author: "Jenny Smith"
+date: "2/27/20"
+output: html_document
+---
+
+```{r setup}
+library(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.02.27_CEBPA_doubleMut_bZip_singleMut/"))
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, 
+                      fig.align='center', fig.width = 10, fig.height = 10)
+options(stringsAsFactors = FALSE,bitmapType = 'cairo', device='x11')
+grDevices::X11.options(type='cairo')
+```
+
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(Cairo)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(readr)
+library(DeGSEA)
+getwd()
+```
+
+
+
+#ClinData
+
+```{r}
+merged <- read.csv(file.path(CDE,"Merged/TARGET_AML_0531_1031_merged_CDEs_2.12.20.csv"))
+
+merged <- merged %>% 
+  filter(USI != "Unknown")
+
+dim(merged) #2314  145
+```
+
+```{r}
+CEBPA <- read.csv("CEBPA_oncoprint.csv",
+                  na.strings = c("#N/A","NA","N/A")) %>% 
+  mutate(CEBPA=ifelse(grepl("Mutant",CEBPA.Allelic.Status ),
+                      "Yes","No")) %>%
+  rename_at(vars(FLT3.ITD), ~gsub(".ITD","",.)) %>%
+  dplyr::select(1:3, Normal.Karyotype, CEBPA, CSF3R:NRAS, WT1, FLT3,DHX15,KIT:PTPRJ) %>%
+  mutate_at(vars(CEBPA:PTPRJ), ~factor(., levels=c("Yes","No"))) %>%
+  
+  #For Ordering the columns
+  group_by(CEBPA.Allelic.Status) %>%
+  arrange(CEBPA,CSF3R, GATA2,NRAS, WT1,
+          FLT3,  DHX15,KIT,
+          EP300, IKZF1,MYC,PTPRJ) %>%
+  ungroup() %>% 
+  arrange(CEBPA.Allelic.Status)
+
+head(CEBPA)
+# dim(CEBPA) #110  15
+# which(is.na(CEBPA$USI))
+```
+
+```{r}
+View(CEBPA)
+```
+
+```{r}
+# sapply(CEBPA[,5:ncol(CEBPA)], function(x) table(x,useNA='ifany'))
+```
+
+
+#Format Mutation Matrix
+
+```{r}
+binarize <-  function(mat){
+  for(i in 1:nrow(mat)){
+    gene <- rownames(mat)[i]
+    binarized <- sapply(CEBPA[[gene]], function(g)
+      ifelse(g=="Yes",1,0))
+    mat[gene,] <- binarized
+  }
+  return(mat)
+}
+```
+
+```{r}
+genes <- c(colnames(CEBPA[,5:ncol(CEBPA)])) 
+
+genes
+```
+
+```{r}
+dimnames=list(genes,CEBPA$Reg.)
+alter_list <- list(mutation=matrix(ncol=110,nrow=12, 
+                                   dimnames = dimnames),
+                   single_mut=matrix(0,ncol=110,nrow=12,
+                                        dimnames=dimnames),
+                   double_mut=matrix(0,ncol=110,nrow=12,
+                                        dimnames=dimnames))
+# lapply(alter_list, head)
+```
+
+```{r}
+alter_list$mutation <- binarize(alter_list$mutation)
+alter_list$mutation["CEBPA",] <- 0
+
+alter_list$single_mut["CEBPA",] <- ifelse(CEBPA[["CEBPA.Allelic.Status"]] == "Single Mutant", 1,0)
+alter_list$double_mut["CEBPA",] <- ifelse(CEBPA[["CEBPA.Allelic.Status"]] == "Double Mutant", 1,0)
+```
+
+
+```{r}
+# lapply(alter_list,head)
+# apply(alter_list$mutation,1,table, useNA='ifany')
+# apply(alter_list$single_mut,1,table, useNA='ifany')
+# apply(alter_list$double_mut,1,table, useNA='ifany')
+```
+
+
+#Oncoprint
+
+```{r}
+library(ComplexHeatmap)
+```
+
+```{r}
+col = c(mutation = "dodgerblue4", 
+        single_mut = "dodgerblue2", 
+        double_mut= "dodgerblue4")
+```
+
+
+```{r}
+KaryoColors <- c("No"="slateblue2",
+        "Yes"="slateblue4", 
+        "Unknown"="slategray4")
+
+bar_param <- default_axis_param("column") 
+bar_param$gp$fontsize <- 16
+
+row_bar_param <- default_axis_param("row")
+row_bar_param$gp$fontsize <- 18
+
+HA_samples <- HeatmapAnnotation(
+  which = "column",
+  cbar = anno_oncoprint_barplot(axis_param=bar_param),
+  df=as.data.frame(select(CEBPA,`Normal Karyotype`=Normal.Karyotype)),
+  name="CEBPA Oncoprint",
+  col=list(`Normal Karyotype`=KaryoColors),
+  gap=unit(2.5,"mm"),
+  simple_anno_size = unit(1.0, "cm"),
+  annotation_name_gp = gpar(fontsize=20),
+  annotation_legend_param=list(title_gp=gpar(fontsize = 18),
+                               labels_gp=gpar(fontsize=12)))
+
+HA_samples
+```
+
+```{r fig.width=20, fig.height=8}
+linewidth=3
+op <- oncoPrint(mat=alter_list, 
+          alter_fun = list(
+            background = function(x, y, w, h) 
+              grid.rect(x, y, w, h,
+                        gp = gpar(fill = "grey90",
+                                  col="white",
+                                  lwd=linewidth)),
+                 mutation = function(x, y, w, h) 
+                    grid.rect(x, y, w, h, 
+                      gp = gpar(fill = col["mutation"],
+                                col = "white",
+                                lwd=linewidth)),
+                 single_mut = function(x, y, w, h) 
+                    grid.rect(x, y, w, h, 
+                      gp = gpar(fill = col["single_mut"],
+                                col = "white",
+                                lwd=linewidth)), 
+                 double_mut = function(x, y, w, h) 
+                    grid.rect(x, y, w, h, 
+                      gp = gpar(fill = col["double_mut"], 
+                                col = "white",
+                                lwd=linewidth))), 
+    col = col,
+    top_annotation = HA_samples,
+    right_annotation = rowAnnotation(rbar = anno_oncoprint_barplot(axis_param = row_bar_param)),
+    # column_order = 1:ncol(alter_list$mutation),
+    row_order = 1:nrow(alter_list$mutation),
+    row_names_gp=gpar(col="black",
+                      fontsize=20,
+                      fontface="bold"),
+    pct_gp = gpar(fontsize = 24))
+
+
+
+op
+# saveRDS(list(op,HA_samples,linewidth,col),"TARGET_AML_CEBPA_Oncoprint.RDS")
+```
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
